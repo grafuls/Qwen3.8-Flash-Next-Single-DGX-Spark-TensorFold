@@ -122,6 +122,9 @@ KCACHE=$(podman image inspect -f '{{index .Config.Labels "tf.patches"}}' "$IMAGE
 rev=$(snapshot_rev)
 sub="hub/models--${MODEL_ID//\//--}/snapshots/$rev"
 if [[ ! -f "$HF_CACHE/$sub/config.json" ]]; then missing "$MODEL_ID @ ${rev:0:8} not in $HF_CACHE: $why download it"; fi
+for f in tokenizer.json model.safetensors.index.json; do
+  [[ -f "$HF_CACHE/$sub/$f" ]] || missing "$MODEL_ID @ ${rev:0:8}: $f is not in $HF_CACHE/$sub (incomplete download): $why re-download it"
+done
 MODEL_ARG="/root/.cache/huggingface/$sub"
 
 step 2 "Checks: arguments, previous server, port, memory"
