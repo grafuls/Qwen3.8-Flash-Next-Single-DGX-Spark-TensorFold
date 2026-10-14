@@ -5,7 +5,7 @@
 (`prefill_seconds`, `tokens_per_second`, `usage.prompt_tokens_details.cached_tokens`). The 0.6.x layout (one chunk,
 `prefill_s`, `cached`) must keep working. Also checks that a prompt-cache hit is still caught.
 
-Usage: tools/test_bench_stats.py        (no GPU, no Docker, no model)
+Usage: tools/test_bench_stats.py        (no GPU, no Podman, no model)
 """
 import http.server
 import json

@@ -38,7 +38,7 @@ KERNEL_SOURCE_MTIME="${KERNEL_SOURCE_MTIME:-1791318675}"
 image_hash() {
   ( cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
     cat patches/*.patch 2>/dev/null
-    sed -n "/<<'DOCKERFILE'/,/^DOCKERFILE\$/p" scripts/prepare.sh
+    sed -n "/<<'CONTAINERFILE'/,/^CONTAINERFILE\$/p" scripts/prepare.sh
     echo "$TF_REPO $TF_REF zig-$ZIG_VERSION $ZIG_SHA256 $BASE_IMAGE kernel-mtime-$KERNEL_SOURCE_MTIME tp-1"
   ) | sha256sum | cut -c1-12
 }
@@ -147,7 +147,7 @@ PREPARED_MARKER="$STATE_DIR/prepared"
 prepared_state() {
   local hash label rev
   hash=$(image_hash)
-  label=$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || echo missing)
+  label=$(podman image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || echo missing)
   rev=$(snapshot_rev)
   echo "model=$MODEL_ID@$rev image=$label patches=$hash"
 }

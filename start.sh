@@ -9,7 +9,7 @@
 #   ./start.sh restart --parallel 2 --context 131072
 #   CONTEXT=1048576 ./start.sh restart # YaRN factor 4; a full 1M prompt does not leave 10 GiB free on one Spark
 #   DRAFTS=0 ./start.sh restart        # no MTP drafts (--no-drafts)
-#   DRY_RUN=1 ./start.sh               # print the docker command and exit
+#   DRY_RUN=1 ./start.sh               # print the podman command and exit
 # Extra arguments go to tensorfold-native serve after the defaults, so they win.
 # Settings, from the environment or ./.env (scripts/config.sh):
 #   serving  CONTEXT, PARALLEL, MAX_TOKENS, THINKING, DRAFTS, TEMPERATURE, TOP_P, TOP_K, SERVED_NAME, HOST, PORT
@@ -67,7 +67,7 @@ API_HOST="$HOST"; [[ "$HOST" == 0.0.0.0 || "$HOST" == "::" ]] && API_HOST=127.0.
 [[ "$API_HOST" == *:* ]] && API_HOST="[$API_HOST]"
 URL="http://$API_HOST:$PORT"
 
-running() { [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" == true ]]; }
+running() { [[ "$(podman inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" == true ]]; }
 served_name() {
   curl -s --max-time 5 "$URL/v1/models" 2>/dev/null |
     python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])' 2>/dev/null
@@ -86,11 +86,14 @@ printf '%s  %s · %s at once · %s-token window · %s KV · vision %s · drafts 
 STEPS=5
 step() { printf '%s[%s/%s]%s %s%s%s\n' "$M" "$1" "$STEPS" "$R" "$B" "$2" "$R"; }
 
-command -v docker >/dev/null || die "docker is not installed"
+command -v podman >/dev/null || die "podman is not installed"
+if (( ! DRY )) && ! compgen -G '/etc/cdi/*nvidia*' >/dev/null && ! compgen -G '/var/run/cdi/*nvidia*' >/dev/null; then
+  die "no NVIDIA CDI spec found; run: sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
+fi
 mkdir -p "$KERNEL_CACHE" "$STATE_DIR"
 exec 8>"$STATE_DIR/start.lock"
 flock -n 8 || die "another ./start.sh is already running; wait for it to finish"
-(( DRY )) && log "DRY_RUN=1: printing the docker command; nothing is stopped or started"
+(( DRY )) && log "DRY_RUN=1: printing the podman command; nothing is stopped or started"
 
 if (( ! DRY )) && [[ "$MODE" == start ]] && running; then
   log "$CONTAINER_NAME is already running (model: $(served_name || echo "not answering yet"), port $PORT): nothing to do."
@@ -112,22 +115,26 @@ why="scripts/prepare.sh did not"; [[ "${PREPARE:-auto}" == 0 ]] && why="PREPARE=
 (( DRY )) && why="DRY_RUN: scripts/prepare.sh would"
 missing() { if (( DRY )); then warn "$1"; else die "$1"; fi; }
 have_image=1
-docker image inspect "$IMAGE" >/dev/null 2>&1 || { have_image=0; missing "image $IMAGE missing: $why build it"; }
+podman image inspect "$IMAGE" >/dev/null 2>&1 || { have_image=0; missing "image $IMAGE missing: $why build it"; }
 if (( have_image )); then
-  kernels=$(docker image inspect -f '{{index .Config.Labels "tf.kernels"}}' "$IMAGE" 2>/dev/null || true)
+  kernels=$(podman image inspect -f '{{index .Config.Labels "tf.kernels"}}' "$IMAGE" 2>/dev/null || true)
   [[ "$kernels" == present ]] || missing "$IMAGE has no kernel set (tf.kernels=${kernels:-?}): scripts/prepare.sh --rebuild"
 fi
-KCACHE=$(docker image inspect -f '{{index .Config.Labels "tf.patches"}}' "$IMAGE" 2>/dev/null || true)
+KCACHE=$(podman image inspect -f '{{index .Config.Labels "tf.patches"}}' "$IMAGE" 2>/dev/null || true)
 [[ "$KCACHE" =~ ^[0-9a-f]{12}$ ]] || KCACHE=$(image_hash)
+mkdir -p "$KERNEL_CACHE/$KCACHE"   # podman, unlike docker, won't create a missing bind-mount source
 rev=$(snapshot_rev)
 sub="hub/models--${MODEL_ID//\//--}/snapshots/$rev"
 if [[ ! -f "$HF_CACHE/$sub/config.json" ]]; then missing "$MODEL_ID @ ${rev:0:8} not in $HF_CACHE: $why download it"; fi
+for f in tokenizer.json model.safetensors.index.json; do
+  [[ -f "$HF_CACHE/$sub/$f" ]] || missing "$MODEL_ID @ ${rev:0:8}: $f is not in $HF_CACHE/$sub (incomplete download): $why re-download it"
+done
 MODEL_ARG="/root/.cache/huggingface/$sub"
 
 step 2 "Checks: arguments, previous server, port, memory"
 if (( have_image )); then
   code=0
-  docker run --rm --network none --entrypoint /opt/tensorfold/native/bin/tensorfold-native "$IMAGE" \
+  podman run --rm --network none --entrypoint /opt/tensorfold/native/bin/tensorfold-native "$IMAGE" \
     serve /nonexistent/argument-check --name "$SERVED_NAME" --host "$HOST" --port "$PORT" "${SERVE_ARGS[@]}" "${USER_ARGS[@]}" \
     >/dev/null 2>"$STATE_DIR/args.err" || code=$?
   if (( code == 2 )) || ! grep -q 'neither a directory' "$STATE_DIR/args.err"; then
@@ -143,11 +150,11 @@ elif [[ "$MODE" == start ]] && running; then
   log "A server was left running: stopping it, then starting"
   ./stop.sh
 fi
-if (( ! DRY )) && docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+if (( ! DRY )) && podman ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
   log "Removing the previous container $CONTAINER_NAME"
   mkdir -p "$LOG_DIR"
-  docker logs "$CONTAINER_NAME" > "$LOG_DIR/$(date +%Y%m%d-%H%M%S).log" 2>&1 || true
-  docker rm -f "$CONTAINER_NAME" >/dev/null
+  podman logs "$CONTAINER_NAME" > "$LOG_DIR/$(date +%Y%m%d-%H%M%S).log" 2>&1 || true
+  podman rm -f "$CONTAINER_NAME" >/dev/null
 fi
 if ss -ltn "sport = :$PORT" 2>/dev/null | grep -q LISTEN; then
   (( DRY )) && log "DRY_RUN: port $PORT is in use" ||
@@ -175,8 +182,8 @@ KEY_ARGS=(); [[ -z "${TENSORFOLD_API_KEY:-}" ]] || { export TENSORFOLD_API_KEY; 
 
 step 3 "Launch: container $CONTAINER_NAME"
 log "tensorfold-native serve $MODEL_ARG --name $SERVED_NAME --host $HOST --port $PORT ${SERVE_ARGS[*]} ${USER_ARGS[*]}"
-here_cmd=(docker run -d --name "$CONTAINER_NAME"
-          --gpus all --ipc=host --network host
+here_cmd=(podman run -d --name "$CONTAINER_NAME"
+          --device nvidia.com/gpu=all --ipc=host --network host
           --ulimit memlock=-1 --ulimit stack=67108864
           "${ENV_ARGS[@]}" "${KEY_ARGS[@]}"
           -v "$HF_CACHE":/root/.cache/huggingface:ro
@@ -192,18 +199,18 @@ fi
 
 if [[ "${FOREGROUND:-0}" == 1 ]]; then
   trap './stop.sh; exit 130' INT TERM
-  docker logs -f "$CONTAINER_NAME" || true
-  exit "$(docker inspect -f '{{.State.ExitCode}}' "$CONTAINER_NAME" 2>/dev/null || echo 1)"
+  podman logs -f "$CONTAINER_NAME" || true
+  exit "$(podman inspect -f '{{.State.ExitCode}}' "$CONTAINER_NAME" 2>/dev/null || echo 1)"
 fi
 
 step 4 "Loading: ~66 GiB of weights (the FP8 n-gram table included)"
 NOISE='^\s*$|^=+$|^== PyTorch ==|^NVIDIA Release|Copyright|All rights reserved|PyTorch Version|Various files include|NOTE: CUDA Forward|Using CUDA|cuda-compatibility|Container image|^\[tensorfold\] [^ ]+ "GET /(health|v1/models|models|metrics|stats|slots)[ ?]'
-docker logs -f "$CONTAINER_NAME" > >(grep --line-buffered -v -E "$NOISE" | sed -u "s/^/  ${D}│${R} /") 2>&1 &
+podman logs -f "$CONTAINER_NAME" > >(grep --line-buffered -v -E "$NOISE" | sed -u "s/^/  ${D}│${R} /") 2>&1 &
 LOGS_PID=$!
 trap 'kill $LOGS_PID 2>/dev/null || true' EXIT
 loaded_gib() {
   local pids
-  pids=$(docker top "$CONTAINER_NAME" -eo pid 2>/dev/null | tail -n +2 | paste -sd'|')
+  pids=$(podman top "$CONTAINER_NAME" -eo pid 2>/dev/null | tail -n +2 | paste -sd'|')
   [[ -n "$pids" ]] || { echo 0; return; }
   nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null |
     awk -F', *' -v re="^($pids)$" '$1 ~ re { s += $2 } END { printf "%.1f", s / 1024 }'
@@ -212,17 +219,17 @@ fail() {
   kill $LOGS_PID 2>/dev/null || true
   sleep 0.5
   printf '\n%s── last server log lines ──%s\n' "$D" "$R"
-  docker logs --tail 40 "$CONTAINER_NAME" 2>&1 | sed 's/^/  │ /'
+  podman logs --tail 40 "$CONTAINER_NAME" 2>&1 | sed 's/^/  │ /'
   die "$1"
 }
 start=$SECONDS
 next_beat=15
 until curl -sf --max-time 5 "$URL/health" >/dev/null 2>&1; do
-  running || fail "the server exited (code $(docker inspect -f '{{.State.ExitCode}}' "$CONTAINER_NAME")) before it was ready"
-  (( SECONDS - start < WAIT_TIMEOUT )) || fail "not ready after ${WAIT_TIMEOUT}s; it is still running: docker logs -f $CONTAINER_NAME"
+  running || fail "the server exited (code $(podman inspect -f '{{.State.ExitCode}}' "$CONTAINER_NAME")) before it was ready"
+  (( SECONDS - start < WAIT_TIMEOUT )) || fail "not ready after ${WAIT_TIMEOUT}s; it is still running: podman logs -f $CONTAINER_NAME"
   a=$(awk '/MemAvailable/ {print int($2 / 1048576)}' /proc/meminfo)
   if (( a < MEM_FLOOR_GIB )); then
-    docker stop -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    podman stop -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
     fail "only $a GiB memory left while loading (MEM_FLOOR_GIB $MEM_FLOOR_GIB): stopped"
   fi
   if (( SECONDS - start >= next_beat )); then
@@ -253,7 +260,7 @@ cat <<EOF
     Loaded   in ${LOADED_S}s · ${avail_gb} GiB was free
     Model    $MODEL_ID @ ${MODEL_REVISION:0:8} ($QUANT_LABEL)
     Window   $(arg_value --context) tokens$( [[ "$TF_FLASHNEXT_YARN" != 0 ]] && echo " (YaRN x$TF_FLASHNEXT_YARN)") · $(arg_value --parallel) at once · $KV_DTYPE KV · drafts $( [[ "$DRAFTS" == 1 ]] && echo MTP || echo off)
-    Logs     docker logs -f $CONTAINER_NAME
+    Logs     podman logs -f $CONTAINER_NAME
     Restart  ./start.sh restart
     Stop     ./stop.sh
 

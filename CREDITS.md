@@ -106,7 +106,7 @@ This recipe no longer applies those patches (the serving path is the Zig engine)
   decoding. **[Pillow](https://python-pillow.org/)** (MIT-CMU): image decoding.
 - **[Hugging Face Hub](https://huggingface.co/)**: model hosting, the `hf` CLI and `huggingface_hub` (Apache 2.0), and
   the [safetensors](https://github.com/huggingface/safetensors) format (Apache 2.0) the checkpoint ships in.
-- **[Docker](https://www.docker.com/)** and the
+- **[Podman](https://podman.io/)** and the
   **[NVIDIA Container Toolkit](https://github.com/NVIDIA/nvidia-container-toolkit)** (Apache 2.0): running the server
   on the GPU in a container.
 - **[GitHub Container Registry](https://ghcr.io)**: hosting the prebuilt image, when one is published.

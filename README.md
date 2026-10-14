@@ -137,9 +137,9 @@ The 6,574-token row is the first long prefill after load. The later rows are 1,3
 - A DGX Spark (or another GB10 system with 128 GB unified memory) with nothing else large on the GPU. The default
   window needs about 92 GiB `MemAvailable` at start (weights ~66 GiB, one full cache, scratch slack and a floor).
   `start.sh` stops before launching below that (`MEM_NEED_GIB`).
-- Docker with the NVIDIA container runtime, and your user in the `docker` group.
+- Podman (rootless is fine) with the NVIDIA Container Toolkit and a CDI spec (`sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`).
 - ~160 GB free disk on a fresh machine: ~122 GiB for the checkpoint under `~/.cache/huggingface` and the image under
-  Docker's root. `scripts/prepare.sh` checks both. Keep at least 100 GB free.
+  Podman's root. `scripts/prepare.sh` checks both. Keep at least 100 GB free.
 - Optional: the `hf` CLI on the host and a Hugging Face token in `~/.cache/huggingface/token` or `HF_TOKEN`. The
   checkpoint is public.
 
@@ -172,7 +172,7 @@ enough `max_tokens`. `"draft": false` on a request serves one token at a time; a
 ```bash
 ./start.sh restart
 ./stop.sh
-docker logs -f qwen38-flash-next-tf
+podman logs -f qwen38-flash-next-tf
 curl -s http://<spark-address>:8888/health
 ```
 
@@ -223,11 +223,11 @@ has not been taken while the text server is in use.
 
 `FOREGROUND=1 ./start.sh` stays attached and exits with the container's exit code. Extra arguments go to
 `tensorfold-native serve` after the defaults (`./start.sh restart --context 131072`). `DRY_RUN=1 ./start.sh` prints
-the docker command and changes nothing.
+the podman command and changes nothing.
 
 **`scripts/prepare.sh`:**
 
-1. Preflight: Docker, disk.
+1. Preflight: Podman, disk.
 2. The image `tensorfold-qwen38:zig-db28187`: TensorFold at `TF_REF` with every `patches/*.patch` applied, Zig 0.17.0,
    on `nvcr.io/nvidia/pytorch:26.07-py3`, and the TP=1 Triton kernel set (cubins pinned with `KERNEL_SOURCE_MTIME`).
    It tries the matching prebuilt image from GitHub Container Registry first (`PULL=0` builds locally).

@@ -25,11 +25,11 @@ assignees: ""
 
 - Hardware: <!-- e.g. 1x DGX Spark (GB10, 128 GB unified memory) -->
 - Memory available before launch: <!-- `free -g`; other GPU workloads running? -->
-- Image: <!-- `docker images | grep tensorfold-qwen38`, or the ghcr.io tag you pulled -->
-- TensorFold version: <!-- `docker exec qwen38-flash-next-tf tensorfold --version` -->
+- Image: <!-- `podman images | grep tensorfold-qwen38`, or the ghcr.io tag you pulled -->
+- TensorFold version: <!-- `podman exec qwen38-flash-next-tf tensorfold --version` -->
 - `start.sh` invocation: <!-- e.g. `./start.sh`, or `PARALLEL=2 ./start.sh --context 131072` -->
 - Changed settings: <!-- PARALLEL, CONTEXT, KV_DTYPE, PLE_ON_SSD, MTP_DRAFTS, MTP_CONFIDENCE, TENSORFOLD_PREFILL_ROWS, TENSORFOLD_MTP_COPY -->
-- Startup lines: <!-- `docker logs qwen38-flash-next-tf 2>&1 | grep -E "startup estimate|Flash Next on CUDA|serving"` -->
+- Startup lines: <!-- `podman logs qwen38-flash-next-tf 2>&1 | grep -E "startup estimate|Flash Next on CUDA|serving"` -->
 
 ---
 
@@ -50,7 +50,7 @@ assignees: ""
 ### Additional context
 
 Add any other context here: a minimal request that reproduces bad output, JSON
-responses, `docker inspect` output, and so on.
+responses, `podman inspect` output, and so on.
 
 <details>
 <summary>Minimal reproduction sample</summary>
@@ -86,7 +86,7 @@ curl -s http://localhost:8888/v1/chat/completions \
 
 <!--
       Paste the log output below between the backticks, and mention whether it came
-      from `start.sh`, `scripts/prepare.sh`, `docker logs qwen38-flash-next-tf`, or a client.
+      from `start.sh`, `scripts/prepare.sh`, `podman logs qwen38-flash-next-tf`, or a client.
 
       Common culprits worth checking before filing:
         * "startup memory budget cannot fit" -> another GPU workload is using memory, or
