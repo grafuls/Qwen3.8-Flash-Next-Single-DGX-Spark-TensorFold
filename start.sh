@@ -87,6 +87,9 @@ STEPS=5
 step() { printf '%s[%s/%s]%s %s%s%s\n' "$M" "$1" "$STEPS" "$R" "$B" "$2" "$R"; }
 
 command -v podman >/dev/null || die "podman is not installed"
+if (( ! DRY )) && ! compgen -G '/etc/cdi/*nvidia*' >/dev/null && ! compgen -G '/var/run/cdi/*nvidia*' >/dev/null; then
+  die "no NVIDIA CDI spec found; run: sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
+fi
 mkdir -p "$KERNEL_CACHE" "$STATE_DIR"
 exec 8>"$STATE_DIR/start.lock"
 flock -n 8 || die "another ./start.sh is already running; wait for it to finish"
