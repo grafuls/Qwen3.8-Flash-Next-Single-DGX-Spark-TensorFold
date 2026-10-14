@@ -5,7 +5,7 @@
 non-English systems and start.sh refused to start. This runs start.sh's own `avail_gb=` line with a `free` on PATH
 that prints a German row, and checks the figure still comes out as MemAvailable in whole GiB.
 
-Usage: tools/test_start_meminfo.py        (needs bash and /proc/meminfo; no GPU, no Docker)
+Usage: tools/test_start_meminfo.py        (needs bash and /proc/meminfo; no GPU, no Podman)
 """
 import os
 import re

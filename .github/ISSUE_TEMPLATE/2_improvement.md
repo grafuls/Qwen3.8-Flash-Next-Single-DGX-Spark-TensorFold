@@ -46,7 +46,7 @@ assignees: ""
        * prefill tok/s and TTFT at 8k-128k tokens, and decode tok/s at 1, 2 and 4
          concurrent requests, measured with sparkDash
          (https://github.com/MiaAI-Lab/sparkDash) or tools/bench.py
-       * the startup estimate from `docker logs qwen38-flash-next-tf | grep "startup estimate"`
+       * the startup estimate from `podman logs qwen38-flash-next-tf | grep "startup estimate"`
        * needle retrieval (tools/needle.py) PASS/FAIL
 
      Before/after pairs are much more useful than a single number, and please say

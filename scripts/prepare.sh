@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prepare this Spark to serve Qwen3.8-Flash-Next (INT4-AutoRound) with TensorFold's Zig engine (tensorfold-native, one GPU):
-#   1. preflight: docker, the GPU, disk
+#   1. preflight: podman, the GPU, disk
 #   2. the image: tensorfold-native built from TensorFold (TF_REF) plus patches/*.patch with Zig, on NVIDIA's
 #      PyTorch container, with the TP=1 kernel set; pulled prebuilt when a matching tag is reachable (PULL=0 skips
 #      that), else built locally
@@ -32,14 +32,14 @@ if (( _mem_here < MEM_FLOOR_GIB )); then
   if [[ "${MEM_CHECK:-1}" == 0 ]]; then warn "$_msg"; else die "$_msg (MEM_CHECK=0 continues anyway)"; fi
 fi
 log "Memory: ${_mem_here} GiB MemAvailable (floor $MEM_FLOOR_GIB)"
-command -v docker >/dev/null || die "docker is not installed"
-docker info >/dev/null 2>&1 || die "cannot talk to the docker daemon (is your user in the docker group?)"
+command -v podman >/dev/null || die "podman is not installed"
+podman info >/dev/null 2>&1 || die "cannot run podman (is it set up for rootless use?)"
 if ! command -v nvidia-smi >/dev/null; then warn "nvidia-smi not found"
 elif ! nvidia-smi -L >/dev/null 2>&1; then warn "nvidia-smi failed: is the NVIDIA driver working?"; fi
-docker info 2>/dev/null | grep -qi nvidia || warn "docker does not list an nvidia runtime; --gpus all may fail"
+ls /etc/cdi/nvidia.yaml /var/run/cdi/nvidia.yaml >/dev/null 2>&1 || warn "no NVIDIA CDI spec found; run: sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
 
 PATCHES_HASH=$(image_hash)
-built_hash=$(docker image inspect -f '{{index .Config.Labels "tf.patches"}}' "$IMAGE" 2>/dev/null || true)
+built_hash=$(podman image inspect -f '{{index .Config.Labels "tf.patches"}}' "$IMAGE" 2>/dev/null || true)
 free_gb() { df -BG --output=avail "$1" 2>/dev/null | tail -1 | tr -dc '0-9'; }
 
 HUB_MISSING_PY='
@@ -66,7 +66,7 @@ hub_missing_gb() {
   return 1
 }
 
-DOCKER_ROOT=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
+PODMAN_ROOT=$(podman info -f '{{.Store.GraphRoot}}' 2>/dev/null || echo /var/lib/containers/storage)
 rev=$(snapshot_rev)
 if missing=$(hub_missing_gb); then
   need_ckpt=0; (( missing == 0 )) || need_ckpt=$((missing + 5))
@@ -78,40 +78,40 @@ else
 fi
 (( need_ckpt )) || ckpt_what="nothing to download"
 need_img=0; [[ $REBUILD -eq 0 && "$built_hash" == "$PATCHES_HASH" ]] || need_img=$IMAGE_FREE_GB
-if [[ "$(stat -c %d "$HF_CACHE")" == "$(stat -c %d "$DOCKER_ROOT" 2>/dev/null)" ]]; then
+if [[ "$(stat -c %d "$HF_CACHE")" == "$(stat -c %d "$PODMAN_ROOT" 2>/dev/null)" ]]; then
   have=$(free_gb "$HF_CACHE"); (( have >= need_ckpt + need_img )) ||
-    die "only ${have} GB free under $HF_CACHE (also Docker's root), ~$((need_ckpt + need_img)) GB needed: $ckpt_what; the image needs ${need_img} GB"
+    die "only ${have} GB free under $HF_CACHE (also Podman's root), ~$((need_ckpt + need_img)) GB needed: $ckpt_what; the image needs ${need_img} GB"
 else
   have=$(free_gb "$HF_CACHE"); (( have >= need_ckpt )) || die "only ${have} GB free under $HF_CACHE, ~${need_ckpt} GB needed: $ckpt_what"
-  have=$(free_gb "$DOCKER_ROOT"); (( have >= need_img )) ||
-    die "only ${have} GB free under Docker's root ($DOCKER_ROOT); the image needs ~${need_img} GB"
+  have=$(free_gb "$PODMAN_ROOT"); (( have >= need_img )) ||
+    die "only ${have} GB free under Podman's root ($PODMAN_ROOT); the image needs ~${need_img} GB"
 fi
 log "Disk: $(free_gb "$HF_CACHE") GB free under $HF_CACHE ($ckpt_what)"
 
 prebuilt=$(prebuilt_image)
 if [[ $REBUILD -eq 0 && "${PULL:-1}" == 1 && "$built_hash" != "$PATCHES_HASH" ]]; then
   log "Pulling the prebuilt image $prebuilt (PULL=0 builds instead)"
-  if docker pull "$prebuilt" &&
-     [[ "$(docker image inspect -f '{{index .Config.Labels "tf.patches"}}' "$prebuilt")" == "$PATCHES_HASH" ]]; then
-    docker tag "$prebuilt" "$IMAGE"; built_hash=$PATCHES_HASH
+  if podman pull "$prebuilt" &&
+     [[ "$(podman image inspect -f '{{index .Config.Labels "tf.patches"}}' "$prebuilt")" == "$PATCHES_HASH" ]]; then
+    podman tag "$prebuilt" "$IMAGE"; built_hash=$PATCHES_HASH
     log "Using $prebuilt as $IMAGE"
   else
     warn "could not pull $prebuilt: building it locally"
   fi
 fi
 if [[ $REBUILD -eq 1 || "$built_hash" != "$PATCHES_HASH" ]]; then
-  docker image inspect "$BASE_IMAGE" >/dev/null 2>&1 && [[ $REBUILD -eq 0 ]] || { log "Pulling base image $BASE_IMAGE"; docker pull "$BASE_IMAGE"; }
+  podman image inspect "$BASE_IMAGE" >/dev/null 2>&1 && [[ $REBUILD -eq 0 ]] || { log "Pulling base image $BASE_IMAGE"; podman pull "$BASE_IMAGE"; }
   log "Building $IMAGE (TensorFold ${TF_REF:0:12}, Zig $ZIG_VERSION, patches $PATCHES_HASH, TP=1 kernel set)"
   ctx=$(mktemp -d "$STATE_DIR/build.XXXXXX")
   trap 'rm -rf -- "$ctx"' EXIT
   mkdir -p "$ctx/patches"
   compgen -G 'patches/*.patch' >/dev/null && cp -- patches/*.patch "$ctx/patches/"
   nocache=(); [[ $REBUILD -eq 1 ]] && nocache=(--no-cache)
-  docker build "${nocache[@]}" -t "$IMAGE" --build-arg BASE_IMAGE="$BASE_IMAGE" \
+  podman build "${nocache[@]}" -t "$IMAGE" --build-arg BASE_IMAGE="$BASE_IMAGE" \
     --build-arg TF_REPO="$TF_REPO" --build-arg TF_REF="$TF_REF" \
     --build-arg ZIG_VERSION="$ZIG_VERSION" --build-arg ZIG_SHA256="$ZIG_SHA256" \
     --build-arg PATCHES_HASH="$PATCHES_HASH" --build-arg KERNEL_SOURCE_MTIME="$KERNEL_SOURCE_MTIME" \
-    -f - "$ctx" <<'DOCKERFILE'
+    -f - "$ctx" <<'CONTAINERFILE'
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:26.07-py3
 FROM ${BASE_IMAGE} AS build
 ARG ZIG_VERSION
@@ -159,12 +159,12 @@ ENV HF_HOME=/root/.cache/huggingface TENSORFOLD_CUDA_KERNELS=/opt/tensorfold/sha
     CUDA_CACHE_PATH=/cache/nv \
     TENSORFOLD_VISION_PYTHONPATH=/opt/tensorfold/python
 WORKDIR /workspace
-DOCKERFILE
+CONTAINERFILE
   rm -rf -- "$ctx"; trap - EXIT
 else
   log "Image $IMAGE already built with patches $PATCHES_HASH"
 fi
-docker run --rm --network none --entrypoint test "$IMAGE" -x /opt/tensorfold/native/bin/tensorfold-native ||
+podman run --rm --network none --entrypoint test "$IMAGE" -x /opt/tensorfold/native/bin/tensorfold-native ||
   die "$IMAGE has no tensorfold-native"
 log "Image $IMAGE: tensorfold-native, kernel set present"
 
@@ -173,7 +173,7 @@ download() {
   if command -v hf >/dev/null; then
     hf download "$1" ${2:+--revision "$2"} --cache-dir "$HF_CACHE/hub" >/dev/null
   else
-    docker run --rm --user "$(id -u):$(id -g)" --network host --entrypoint python ${HF_TOKEN:+-e HF_TOKEN} \
+    podman run --rm --user "$(id -u):$(id -g)" --network host --entrypoint python ${HF_TOKEN:+-e HF_TOKEN} \
       ${HF_HUB_OFFLINE:+-e HF_HUB_OFFLINE} \
       -v "$HF_CACHE":/hf -e HF_HOME=/hf -e HOME=/tmp "$IMAGE" -c \
       'import sys; from huggingface_hub import snapshot_download; snapshot_download(sys.argv[1], revision=sys.argv[2] or None)' "$1" "$2"

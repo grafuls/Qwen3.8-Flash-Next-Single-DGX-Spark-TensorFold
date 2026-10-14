@@ -36,7 +36,7 @@
       * `scripts/prepare.sh` (a patch change rebuilds the image; every patch must apply
         with `patch -p0` against TensorFold's site-packages)
       * an actual launch, plus
-        `docker logs qwen38-flash-next-tf 2>&1 | grep -E "startup estimate|serving"`
+        `podman logs qwen38-flash-next-tf 2>&1 | grep -E "startup estimate|serving"`
       * `tools/bench.py`, `tools/needle.py`, `tools/toolcheck.py` against the running server
       * if behavior changed, the measured numbers with the new settings, stating
         which configuration they came from (see README "Performance")
