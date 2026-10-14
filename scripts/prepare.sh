@@ -173,6 +173,7 @@ download() {
   if command -v hf >/dev/null; then
     hf download "$1" ${2:+--revision "$2"} --cache-dir "$HF_CACHE/hub" >/dev/null
   else
+    mkdir -p "$HF_CACHE"
     podman run --rm --user "$(id -u):$(id -g)" --network host --entrypoint python ${HF_TOKEN:+-e HF_TOKEN} \
       ${HF_HUB_OFFLINE:+-e HF_HUB_OFFLINE} \
       -v "$HF_CACHE":/hf -e HF_HOME=/hf -e HOME=/tmp "$IMAGE" -c \

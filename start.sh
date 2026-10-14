@@ -119,6 +119,7 @@ if (( have_image )); then
 fi
 KCACHE=$(podman image inspect -f '{{index .Config.Labels "tf.patches"}}' "$IMAGE" 2>/dev/null || true)
 [[ "$KCACHE" =~ ^[0-9a-f]{12}$ ]] || KCACHE=$(image_hash)
+mkdir -p "$KERNEL_CACHE/$KCACHE"   # podman, unlike docker, won't create a missing bind-mount source
 rev=$(snapshot_rev)
 sub="hub/models--${MODEL_ID//\//--}/snapshots/$rev"
 if [[ ! -f "$HF_CACHE/$sub/config.json" ]]; then missing "$MODEL_ID @ ${rev:0:8} not in $HF_CACHE: $why download it"; fi
