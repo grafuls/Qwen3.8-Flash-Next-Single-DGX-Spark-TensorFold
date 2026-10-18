@@ -5,7 +5,56 @@ Newest first. This recipe serves one DGX Spark. The image is `tensorfold-qwen38:
 
 ## Unreleased
 
-Script and tool fixes only; the image and `patches/` are unchanged.
+**Faster prompt prefill on the NVIDIA FP4 checkpoint (+13 to 15%), and an opt-in fair prefill for mixed loads.**
+
+- `patches/0014-engine-prompt-expert-tile.patch`: the routed experts of prompt chunks of 1,024 rows or more run through a new shared-memory kernel
+  (`fn_experts_tile.cu`: 64 token-expert pairs a CTA, activations staged once in shared memory, weights by `cp.async`; same arithmetic and rounding as the
+  older kernels, so the output bits are identical). On by default: `TF_FLASHNEXT_PROMPT_EXPERT_TILE=2` (gate/up and down; `1` gate/up only; `0` the older
+  kernels); `scripts/config.sh` exports it. Two ranks keep the older kernels unless it is set. Decode and chunks under 1,024 rows are untouched.
+  Paired alternating runs, tile off and on, 3 server starts each, median of 3 prompts: 4k 2,090 to 2,397 tok/s (+14.7%), 16k 2,174 to 2,474 (+13.8%),
+  32k 2,161 to 2,450 (+13.4%). sparkDash: 4k 2,325 to 2,665 tok/s, 16k 2,191 to 2,501, 128k 1,947 to 2,197. Five 100k-token prompts in 250 s (265 s).
+- `patches/0015-engine-fair-prefill.patch`, off by default (`TF_FLASHNEXT_FILL_FAIR=1`; `TF_FLASHNEXT_FILL_LAYERS`, `TF_FLASHNEXT_FILL_AGING`): prompts are
+  filled in two-layer slices, one owner of the prompt buffers handed on at chunk boundaries, shortest prompt first with aging. Five 100k prompts, a running
+  decoder and a short request every 20 s: shorts wait 1.8 s median and 3.9 s worst (187 s and 256 s before), the decoder's longest gap 0.27 s (12 to 15 s per
+  long prompt, up to 218 s). Costs about 20% of the total time of such a mixed load; idle prefill is unchanged. One rank only. The unit tests compile again
+  (the round-log commit had broken `zig build test`).
+- Checks on the default build (tile on): the 7-prompt greedy test has the same token hashes as before (and as with the tile off), drafted equal to
+  `"draft": false` and concurrent equal to serial (`tools/exact.py`), teacher-forced 2,270 of 2,295 (98.91%), `tools/toolcheck.py` 3/3, `tools/visioncheck.py`,
+  a 194,723-token needle (prefill 99.4 s), five 100k prompts plus six shorts without a crash or hang, all answers right. With `TF_FLASHNEXT_FILL_FAIR=1`:
+  the same 7-prompt hashes, exact.py, toolcheck, visioncheck and needle pass, no `PromptBuffersBusy`.
+- README Performance tables re-measured with sparkDash on the final build; decode is unchanged (prose 1 stream 48.5 tok/s, 5 streams 132.7; code 67.9 and 149.7).
+
+**The default checkpoint is now NVIDIA's QAD FP4 export; INT4-AutoRound is optional.**
+
+- `./start.sh` serves `nvidia/Qwen3.8-Flash-Next-FP4-Local` (NVIDIA's quantization-aware-distilled FP4 checkpoint, close to bf16: 91.5% GPQA Diamond and
+  88.7% ToolEvalBench against 92.2% and 89.4% for bf16, per its model card). `CHECKPOINT=int4` (or `CHECKPOINT=int4` in `.env`) serves azampatti's
+  INT4-AutoRound as before. New README section "Choosing the checkpoint (FP4 or INT4)" explains the switch, the downloads, the memory each needs and how to
+  check which one is running. `scripts/config.sh` has a per-checkpoint pin, download size, `WEIGHTS_GIB` (81 GiB measured for the NVIDIA one, 66 for INT4)
+  and label; `prepare.sh` verifies either format; `start.sh`'s memory check and banner follow the checkpoint (about 108 GiB `MemAvailable` needed for FP4,
+  93 for INT4). `PARALLEL` is 5 by default (was 8, for INT4): five full 262,144-token windows fit the 24.36 GiB pool the FP4 checkpoint leaves.
+- `patches/0012-engine-nvidia-fp4.patch`: the Zig engine loads and runs the NVIDIA checkpoint: the config and `quantized_layers` it declares, the
+  CSF-compressed NVFP4 routed-expert scales (new `cuda_csf.zig`), MXFP8 attention, DeltaNet, indexer and shared-expert linears (qmmf mode 2 for
+  decode rows, the prompt GEMM for prompt rows, byte-equal to the Python implementation on real layers), fp32 hyper-connection and n-gram norms, NVFP4 MTP
+  experts, and the 26.8 GiB NVFP4 n-gram table (new `cuda_ssd_table.zig`: a pread pool with dedupe, rows bit-equal to the Python table) with read-ahead of the
+  next prompt chunk's rows (`TF_FLASHNEXT_WARM_AHEAD=0` off; +3.5% prefill). The safetensors index read limit is raised.
+- `patches/0011-vision-nvidia-fp4.patch`: the vision helper reads this checkpoint's quantized tower (MXFP8 attention, NVFP4 MLP).
+- `patches/0013-engine-tune.patch` (and `scripts/config.sh`): `TF_FLASHNEXT_DEPTH` 6 and `TF_FLASHNEXT_PRODUCT_STREAMS` 5 (the engine's 15 drafts a round cost
+  20 to 28% at 3 to 5 streams); a prompt the server has served before keeps a state one token short of its end, so a repeat prefills one row
+  (`TF_FLASHNEXT_REPEAT_CACHE=0` off); an idle server waits 3 ms for requests sent together (`TF_FLASHNEXT_ADMIT_WAIT_MS`), so a burst prefills in one pass and
+  decodes in step instead of staggered; `TF_FLASHNEXT_ROUND_LOG=1` logs a round's time by part. Greedy output is unchanged by these.
+- Checks on the NVIDIA checkpoint: the 7-prompt greedy test is identical across drafted, serial and repeated runs; teacher-forced against our Python build the Zig
+  engine picks the same next token at 98.9% of 2,295 positions (the disagreements are near-ties); tool calls, image input and a 194,723-token needle pass; five
+  100k-token prompts plus six short ones at once ran without a crash or hang (short requests wait for the long prefills, since prefill is serial).
+- Measured on the Spark itself with [sparkDash](https://github.com/MiaAI-Lab/sparkDash): prose decode 46.2 / 72.8 / 88.1 / 106.5 / 132.1 tok/s and code decode
+  66.7 / 101.9 / 117.8 / 133.7 / 150.1 tok/s at 1 to 5 requests; prefill 2,325 tok/s at 4k to 1,947 tok/s at 128k (TTFT 1.95 s to 67.5 s). The README's
+  Performance section leads with these; the INT4 numbers follow below them, and `tools/bench_streams.py` (new: decode at 1 to 5 requests, prose and code, and
+  prefill 4k to 128k, median of 3) gives a second set. The KV and memory section now states the FP4 pool: 24.36 GiB, about 1.46 million fp8 tokens.
+- README, `CREDITS.md` and `NOTICE` describe the NVIDIA checkpoint (NVIDIA Open Model Agreement; the base model's Qwen Community License 1.0 applies too) and keep
+  INT4-AutoRound as the optional checkpoint. Credits for the NVIDIA FP4 support in the Zig engine go to the TensorFold Contributors and MiaAI-Lab.
+- `scripts/prepare.sh` takes `DOCKER_BUILD_ARGS` (empty by default; e.g. `--network host` on a machine where Docker builds cannot resolve DNS).
+
+
+Script and tool fixes:
 
 - `start.sh` reads `MemAvailable` from `/proc/meminfo`. It used `free -g | awk '/^Mem:/'`, which came back empty on
   non-English systems (`Speicher:`, `内存：`) and refused to start. Reported by

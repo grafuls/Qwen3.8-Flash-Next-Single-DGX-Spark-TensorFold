@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Prepare this Spark to serve Qwen3.8-Flash-Next (INT4-AutoRound) with TensorFold's Zig engine (tensorfold-native, one GPU):
+# Prepare this Spark to serve Qwen3.8-Flash-Next ($QUANT_LABEL; see CHECKPOINT in scripts/config.sh) with TensorFold's Zig engine (tensorfold-native, one GPU):
 #   1. preflight: podman, the GPU, disk
 #   2. the image: tensorfold-native built from TensorFold (TF_REF) plus patches/*.patch with Zig, on NVIDIA's
 #      PyTorch container, with the TP=1 kernel set; pulled prebuilt when a matching tag is reachable (PULL=0 skips
 #      that), else built locally
-#   3. the checkpoint in the Hugging Face cache (~122 GiB), at its pinned revision
-#   4. verify it: every shard its index names is there, and it is the GPTQ int4 checkpoint this engine serves
+#   3. the checkpoint in the Hugging Face cache (~96 GiB for the NVIDIA FP4 default, ~122 GiB for CHECKPOINT=int4), at its pinned revision
+#   4. verify it: every shard its index names is there, and it is a checkpoint format this engine serves (ModelOpt NVFP4 or GPTQ int4)
 # ./start.sh runs this by itself when needed. Safe to re-run: every step skips work that is already done.
 # Pass --rebuild to rebuild the image from scratch.
 set -euo pipefail
@@ -201,17 +201,25 @@ cfg = json.load(open(os.path.join(d, "config.json")))
 if cfg.get("model_type") != "qwen4_exp":
     sys.exit("model_type is %r, not qwen4_exp" % cfg.get("model_type"))
 q = cfg.get("quantization_config") or {}
-if str(q.get("quant_method", "")).lower() != "gptq" or q.get("bits") != 4:
-    sys.exit("not a GPTQ-format int4 checkpoint (quant_method %r, bits %r)" % (q.get("quant_method"), q.get("bits")))
-table = [f for f in glob.glob(os.path.join(d, "ple-table", "*.safetensors")) if os.path.getsize(f) > 0]
-if not table:
-    sys.exit("no n-gram table files in ple-table/")
+kind = str(q.get("quant_method", "")).lower()
+if kind == "modelopt":
+    algos = {str(v.get("quant_algo")) for v in (q.get("quantized_layers") or {}).values()}
+    if "NVFP4" not in algos:
+        sys.exit("ModelOpt checkpoint without NVFP4 layers (quant_algo %s)" % sorted(algos))
+    what = "ModelOpt %s (%s)" % (q.get("quant_algo"), "+".join(sorted(algos)))
+elif kind == "gptq" and q.get("bits") == 4:
+    table = [f for f in glob.glob(os.path.join(d, "ple-table", "*.safetensors")) if os.path.getsize(f) > 0]
+    if not table:
+        sys.exit("no n-gram table files in ple-table/")
+    what = "AutoRound int4 g%s, %d n-gram table files" % (q.get("group_size"), len(table))
+else:
+    sys.exit("neither a ModelOpt NVFP4 nor a GPTQ-format int4 checkpoint (quant_method %r, bits %r)" % (kind, q.get("bits")))
 idx = json.load(open(os.path.join(d, "model.safetensors.index.json")))
 shards = sorted(set(idx["weight_map"].values()))
 bad = [s for s in shards if not os.path.isfile(os.path.join(d, s)) or os.path.getsize(os.path.join(d, s)) == 0]
 if bad:
     sys.exit("missing or empty shards: " + ", ".join(bad[:5]))
-print("qwen4_exp, AutoRound int4 g%s, %d n-gram table files, %d tensors in %d shards" % (q.get("group_size"), len(table), len(idx["weight_map"]), len(shards)))'
+print("qwen4_exp, %s, %d tensors in %d shards" % (what, len(idx["weight_map"]), len(shards)))'
 snap="$dir/snapshots/$rev"
 info=$(python3 -I -c "$CHECK_PY" "$snap" 2>&1) || die "the checkpoint at $snap is not ready: $info"
 log "Checkpoint OK: $info"
